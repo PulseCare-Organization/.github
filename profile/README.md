@@ -4,7 +4,7 @@
   <h1>PulseCare System Overview</h1>
   <p>
     <b>PulseCare is an IoT + Edge AI + Cloud healthcare platform for continuous heart-rate monitoring and intelligent wellness support.</b><br>
-    It spans two wearable hardware tracks that share one MAX30102 PPG sensor, one FastAPI backend, a Flutter client, and a RAG medical assistant.
+    It spans two wearable hardware tracks that share one MAX30102 PPG sensor, a FastAPI backend with two dedicated branches, a Flutter client, and a RAG medical assistant.
   </p>
 </div>
 
@@ -24,23 +24,33 @@ Cardiovascular issues need early detection and long-term trend monitoring. Comme
 
 PulseCare is a wellness safety assistant. It does not diagnose arrhythmia and is not a certified medical device.
 
-## 🔄 Dual Hardware Tracks, One Cloud
+## 🔄 Dual Hardware Tracks, Two Backend Branches
 
-Both tracks read the same MAX30102 optical PPG sensor and sync trusted windows to the same FastAPI backend. They differ in where signal-quality decisions run.
+Both tracks read the same MAX30102 optical PPG sensor. They do **not** share one backend checkout. `pulsecare-be` is split by git branch:
+
+| Hardware track | Device repo | Backend repo | Backend branch |
+| --- | --- | --- | --- |
+| ESP32 wearable | `pulsecare-iot` | `pulsecare-be` | **`main`** |
+| Arduino Uno Q Edge AI | `pulsecare-arduino` | `pulsecare-be` | **`arduino-fit`** |
+
+- **`main`**: ingest and APIs for the ESP32 wearable (on-device template matching + FFT, classic FFT JSON payload).
+- **`arduino-fit`**: ingest and APIs for Arduino Uno Q (PPG windows, Edge AI metadata, optional NeuroKit2 / recon fields).
+
+Use the matching backend branch when pairing a device. Do not point ESP32 firmware at an `arduino-fit` deployment, or Uno Q at a `main` deployment, unless you have verified payload compatibility.
 
 <div align="center">
   <table>
     <tr>
       <td align="center" width="50%">
         <b>⌚ Track A — ESP32 wearable</b><br/>
-        <code>pulsecare-iot</code><br/><br/>
+        <code>pulsecare-iot</code> → backend <code>pulsecare-be</code> branch <code>main</code><br/><br/>
         ESP32-WROOM-32 + MAX30102 + ST7789 TFT<br/>
         FreeRTOS sensing, display, and Wi-Fi<br/>
         On-device template matching + 512-point FFT
       </td>
       <td align="center" width="50%">
         <b>🧠 Track B — Arduino Uno Q Edge AI</b><br/>
-        <code>pulsecare-arduino</code><br/><br/>
+        <code>pulsecare-arduino</code> → backend <code>pulsecare-be</code> branch <code>arduino-fit</code><br/><br/>
         Arduino Uno Q (STM32 MCU + Qualcomm Linux) + MAX30102<br/>
         MCU samples PPG; Linux runs quality MLP / wave recovery<br/>
         Only good 512-sample windows are POSTed
@@ -60,7 +70,8 @@ The original closed-loop prototype: a self-contained wearable that filters, tran
 | Quality gate | Normalized cross-correlation template matching (`QUALITY_CAPTURE_GOOD` / `BAD`) to drop motion artifacts |
 | Analytics | On-device 512-point FFT (`ArduinoFFT`) at ~50 Hz, ~10.24 s windows |
 | UI | On-wrist screens: put finger, loading, AC waveform, BPM |
-| Sync | HTTP POST of FFT JSON when quality is `GOOD` |
+| Backend | `pulsecare-be` branch **`main`** |
+| Sync | HTTP POST of FFT JSON when quality is `GOOD`, to backend branch `main` |
 
 ### Track B — Arduino Uno Q Edge AI (`pulsecare-arduino`)
 
@@ -72,6 +83,7 @@ The Hack Challenge / Edge-Cloud path: split MCU sampling and Linux inference on 
 | MCU sketch | ~50 Hz sampling, DC/AC filter, finger detect, beat-to-beat BPM, quality 0–100, `Arduino_RouterBridge` |
 | Linux gateway | 512-sample windows, measured `fs`, quality MLP (numpy), optional Tiny 1D U-Net + SPEAR wave recovery, FFT |
 | Trust rule | POST only when the window is contiguous, finger is present, and Edge AI class is `good_quality` |
+| Backend | `pulsecare-be` branch **`arduino-fit`** (Edge AI / recon / PPG window fields) |
 | Packaging | Arduino App Lab app (`app.yaml`, `python/main.py`, `sketch/sketch.ino`) |
 
 ```text
@@ -79,7 +91,7 @@ MAX30102
   -> Uno Q MCU: PPG, AC, BPM, quality
   -> Arduino_RouterBridge
   -> Uno Q Linux: 512-sample window, Edge AI, optional recon, FFT
-  -> FastAPI: store trusted window + Edge AI metadata
+  -> FastAPI (`pulsecare-be` / `arduino-fit`): store trusted window + Edge AI metadata
   -> Flutter / WebUI: live BPM, FFT, history
 ```
 
@@ -103,7 +115,8 @@ Edge AI answers `good_quality` or `poor_quality`. It is not a disease classifier
     </tr>
     <tr>
       <td align="center">
-        <b>⚙️ PulseCare Backend</b><br/>
+        <b>⚙️ PulseCare Backend (`pulsecare-be`)</b><br/>
+        <code>main</code> for ESP32 · <code>arduino-fit</code> for Arduino Uno Q<br/>
         <code>FastAPI + MongoDB Atlas</code>
       </td>
     </tr>
@@ -138,7 +151,7 @@ Edge AI answers `good_quality` or `poor_quality`. It is not a disease classifier
   </tr>
   <tr>
     <td width="24%" align="center"><kbd>pulsecare-be</kbd></td>
-    <td>FastAPI backend: auth, devices, measurement ingestion, WebSocket FFT stream, RAG chat.</td>
+    <td>FastAPI backend with <b>two branches</b>: <code>main</code> (ESP32) and <code>arduino-fit</code> (Arduino Uno Q). Auth, devices, measurement ingest, WebSocket FFT stream, RAG chat.</td>
   </tr>
   <tr>
     <td width="24%" align="center"><kbd>pulsecare-fe</kbd></td>
@@ -168,8 +181,13 @@ Edge AI answers `good_quality` or `poor_quality`. It is not a disease classifier
       <li><b>Uno Q:</b> Linux quality MLP (and optional recon) on a 512-sample window, then FFT.</li>
     </ul>
   </li>
-  <li>Only trusted windows are POSTed to <code>/api/v1/health-measurements</code> with a device token.</li>
-  <li>Backend stores FFT, optional PPG traces, heart-rate metadata, and Uno Q Edge AI fields.</li>
+  <li>Only trusted windows are POSTed to <code>/api/v1/health-measurements</code> with a device token:
+    <ul>
+      <li><b>ESP32 → <code>pulsecare-be</code> <code>main</code></b></li>
+      <li><b>Uno Q → <code>pulsecare-be</code> <code>arduino-fit</code></b></li>
+    </ul>
+  </li>
+  <li><code>main</code> stores ESP32 FFT measurements. <code>arduino-fit</code> stores FFT, PPG traces, heart-rate metadata, and Edge AI / recon fields.</li>
   <li>Flutter / WebUI query history and subscribe to <code>/api/v1/health-measurements/ws/fourier</code>.</li>
   <li>Chat requests retrieve medical context from vector search and generate educational (not diagnostic) answers.</li>
 </ol>
@@ -189,7 +207,7 @@ Edge AI answers `good_quality` or `poor_quality`. It is not a disease classifier
   <li><b>ESP32 IoT</b>: PlatformIO, FreeRTOS, ArduinoFFT, ST7789, MAX30102, HTTP client</li>
   <li><b>Arduino Uno Q</b>: MCU sketch + Python App Lab gateway, numpy quality MLP, Tiny 1D U-Net recon, FFT</li>
   <li><b>Sensor</b>: MAX30102 optical PPG (I2C)</li>
-  <li><b>Backend</b>: Python 3.11, FastAPI, Uvicorn, Pydantic, JWT</li>
+  <li><b>Backend</b>: Python 3.11, FastAPI, Uvicorn, Pydantic, JWT — repo <code>pulsecare-be</code>, branches <code>main</code> (ESP32) and <code>arduino-fit</code> (Arduino Uno Q)</li>
   <li><b>Database</b>: MongoDB Atlas (Motor async + PyMongo for RAG / Vector Search)</li>
   <li><b>AI / RAG</b>: LangChain, Sentence Transformers, Cross-Encoder rerank, Groq LLM</li>
   <li><b>Clients</b>: Flutter (FL Chart, WebSocket), Uno Q Linux WebUI</li>
@@ -207,7 +225,7 @@ Edge AI answers `good_quality` or `poor_quality`. It is not a disease classifier
   <tr><td width="30%"><b>FFT WebSocket stream</b></td><td><code>/api/v1/health-measurements/ws/fourier</code></td></tr>
 </table>
 
-Both hardware tracks authenticate with a device token and post compatible measurement payloads. Uno Q windows may include extra Edge AI fields (`edge_quality_class`, `edge_model`, recon RMSE, original vs recovered AC).
+Both tracks authenticate with a device token. Point ESP32 at a **`main`** backend and Uno Q at an **`arduino-fit`** backend. Uno Q windows on `arduino-fit` may include extra Edge AI fields (`edge_quality_class`, `edge_model`, recon RMSE, original vs recovered AC).
 
 <details>
 <summary><b>🚀 Quick Start (Local Backend)</b></summary>
@@ -222,6 +240,8 @@ Both hardware tracks authenticate with a device token and post compatible measur
 
 ```bash
 cd pulsecare-be
+git checkout main          # ESP32 wearable
+# git checkout arduino-fit # Arduino Uno Q
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -252,7 +272,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
   <li>Readiness endpoint (with DB check): <code>GET /readyz</code></li>
 </ul>
 
-Pair an ESP32 firmware build from <code>pulsecare-iot</code>, or import the Uno Q App Lab package from <code>pulsecare-arduino</code>, then register a device token before posting measurements.
+Pair ESP32 firmware from <code>pulsecare-iot</code> with backend branch <code>main</code>. Pair the Uno Q App Lab package from <code>pulsecare-arduino</code> with backend branch <code>arduino-fit</code>. Register a device token before posting measurements.
 
 </details>
 
@@ -260,6 +280,7 @@ Pair an ESP32 firmware build from <code>pulsecare-iot</code>, or import the Uno 
 
 <ul>
   <li>Backend production process is defined in <code>pulsecare-be/Procfile</code>.</li>
+  <li>Deploy <code>pulsecare-be</code> <code>main</code> for ESP32; deploy <code>arduino-fit</code> for Arduino Uno Q. Keep the two branch deployments separate.</li>
   <li>Use <code>GET /healthz</code> for frequent lightweight health checks.</li>
   <li>Use <code>GET /readyz</code> for deeper readiness validation.</li>
   <li>ESP32 devices need Wi-Fi credentials and the production ingest URL.</li>
